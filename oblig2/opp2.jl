@@ -1,5 +1,6 @@
 using Random
-using Plots
+using PyPlot
+using Statistics
 
 
 function periodic(spinIndex, dimension)
@@ -41,18 +42,18 @@ function calculateLatticeElements(lattice)
 	return elements
 end
 
-function constructCluster(randSpin, lattice, p)
+function constructCluster(randSpin, lattice, dimensions, p)
 	nElements = calculateLatticeElements(lattice)
 	lattice[randSpin...] *= -1
-	cluster = zeros(0)
-	append!(cluster, randSpin)
+	cluster = []
+	append!(cluster, [randSpin])
 	neighbours = findAllNeighbours(lattice, randSpin, dimensions)
 	neighbours_copy = copy(neighbours)
 	while length(neighbours) > 0
-		for i in 1:length(neighbours)
-			neighbours_copy = neighbours_copy[1:size(neighbours_copy, 1) .!= 1, :]
-			if lattice[randSpin...] == lattice[neighbours[i]...]*(-1) && rand() <= p
-				append!(cluster, neighbours[i])
+		for i in length(neighbours)
+			neighbours_copy = neighbours_copy[1:size(neighbours_copy, 1) .!= i]
+			if lattice[randSpin...] == lattice[neighbours[i]...]*(-1) && rand() < p
+				append!(cluster, [neighbours[i]])
 				lattice[neighbours[i]...] *= -1
 				neighbours_copy = vcat(neighbours_copy, findAllNeighbours(lattice, neighbours[i], dimensions))
 			end
@@ -66,44 +67,137 @@ function constructCluster(randSpin, lattice, p)
 	return lattice
 end
 
-function calculateCorrelation(lattice)
+function calculateCorrelation1D(lattice)
 	dim = size(lattice, 1)
-	r = zeros(dim)
-	s = zeros(dim)
+	distance = zeros(Int64, dim)
+	s = zeros(Int64, dim)
 	for i in 1:dim
-		r[i] += lattice[1, 1].*lattice[i, 1]
+		distance[i] += lattice[1, 1].*lattice[i, 1]
 		s[i] += 1
 	end
-	CR = r./s
+	c = distance./s
+	return c
+end
+
+
+function analyticalCorrelation1D(distance, dimensions, T)
+	dim = dimensions[1]
+	CR = ((cosh(1/T)/sinh(1/T)).^distance*tanh(1/T)^dim + tanh(1/T).^distance)/(1 + tanh(1/T)^dim)
 	return CR
+end
+
+function runModel(dimensions, T; nEpochs=10, nCycles_equil=1000, nCycles_meas=5000, J=1)
+	p = 1 - exp(-2*J/T)
+	c = zeros(dimensions)
+	cSamples = []
+	mSamples = []
+	m2Samples = []
+	m4Samples = []
+	for epoch in 1:nEpochs
+		lattice = rand(-1:2:1, dimensions)
+		for cycle in 1:nCycles_equil
+			randSpin = findRandomSpin(dimensions)
+			lattice = constructCluster(randSpin, lattice, dimensions, p)
+		end
+		m = mean(lattice)
+		m2 = mean(lattice)^2
+		m4 = mean(lattice)^4
+		for cycle in 1:nCycles_meas
+			randSpin = findRandomSpin(dimensions)
+			lattice = constructCluster(randSpin, lattice, dimensions, p)
+			c .+= calculateCorrelation1D(lattice)
+			m += mean(lattice)
+			m2 += mean(lattice)^2
+			m4 += mean(lattice)^4
+		end
+		c ./= nCycles_meas
+		m /= nCycles_meas
+		m2 /= nCycles_meas
+		m4 /= nCycles_meas
+		append!(cSamples, [c])
+		append!(mSamples, m)
+		append!(m2Samples, m2)
+		append!(m4Samples, m4)
+	end
+	return mean(cSamples), mean(mSamples), mean(m2Samples), mean(m4Samples)
 end
 
 
 
 Random.seed!(42)
 
-
-nEpochs = 1
+#=
+nEpochs = 10
 nCycles_equil = 10000
-nCycles_meas = 1000
+nCycles_meas = 5000
 
 L = 16
 dimensions = L
 J = 1
-T = 0.5
-p = 1 - exp(-2*J*T)
 
-CR = zeros(dimensions)
-for epoch in 1:nEpochs
-	lattice = rand(-1:2:1, dimensions)
-	for cycle in 1:(nCycles_equil + nCycles_meas)
-		randSpin = findRandomSpin(dimensions)
-		lattice = constructCluster(randSpin, lattice, p)
-		if cycle >= nCycles_equil
-			CR .+= calculateCorrelation(lattice)
-		end
-	end
-CR ./= nCycles_meas
+c, m, m2, m4 = runModel(dimensions, 1)
+
+distance = LinRange(0, L-1, L)
+
+fig, ax = subplots(2, 1, figsize=(10, 8), sharex=true, sharey=true)
+ax[1].plot(distance, c, color="black", linestyle="dotted", label="Numerical", linewidth=2)
+ax[1].plot(distance, analyticalCorrelation1D(distance, dimensions, 1), color="black", label="Analytical", linewidth=2)
+ax[1].set_ylabel("C(r)", fontsize=14)
+
+c, m, m2, m4 = runModel(dimensions, 0.5)
+
+ax[2].plot(distance, c, color="black", linestyle="dotted", linewidth=2)
+ax[2].plot(distance, analyticalCorrelation1D(distance, dimensions, 0.5), color="black", linewidth=2)
+ax[2].set_ylabel("C(r)", fontsize=14)
+ax[2].set_xlabel("Spin", fontsize=14)
+
+fig.legend(ncol=2, frameon=false, loc="upper center", fontsize=18)
+fig.savefig("2b_3.pdf")
+
+
+L = 16
+dimensions = L, L
+T = LinRange(0.1, 5, 40)
+mT = zeros(Float64, length(T))
+mT2 = zeros(Float64, length(T))
+for i in 1:length(T)
+	c, m, m2, m4 = runModel(dimensions, T[i], nEpochs=1, nCycles_equil=2000, nCycles_meas=10000)
+	mT[i] = m
+	mT2[i] = m2
 end
 
-plot(1:16, CR)
+fig, ax = subplots(1, 1, figsize=(10, 8))
+
+ax.plot(T, mT, color="black")
+ax.set_xlabel("T/J", fontsize=14)
+ax.set_ylabel("m", fontsize=14)
+fig.savefig("2c.pdf")
+
+fig, ax = subplots(1, 1, figsize=(10, 8))
+
+ax.plot(T, mT2, color="black")
+ax.set_xlabel("T/J", fontsize=14)
+ax.set_ylabel("m", fontsize=14)
+fig.savefig("2d.pdf")
+
+=#
+fig, ax = subplots(1, 1)
+
+T = LinRange(2, 2.5, 30)
+dims = [8, 16, 32]
+for dim in dims
+	mT = zeros(Float64, length(T))
+	mT2 = zeros(Float64, length(T))
+	mT4 = zeros(Float64, length(T))
+	for i in 1:length(T)
+		c, m, m2, m4 = runModel((dim, dim), T[i], nEpochs=1, nCycles_equil=2000, nCycles_meas=10000)
+		mT[i] = m
+		mT2[i] = m2
+		mT4[i] = m4
+	end
+	ax.plot(T, mT4./mT2.^2, label="$dim", linewidth=2)
+end
+ax.set_xlabel("T/J", fontsize=14)
+ax.set_ylabel("Gamma", fontsize=14)
+ax.legend(frameon=false, loc="best", fontsize=18)
+fig.savefig("2f.pdf")
